@@ -65,6 +65,6 @@ public enum Location {
     }
 
     public String getDisplayName() { return displayName; }
-    public double getLatitude() { return latitude; }
-    public double getLongitude() { return longitude; }
-}
+    public double getLat() { return latitude; }
+    public double getLng() { return longitude; }
+}.
