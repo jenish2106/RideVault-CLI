@@ -10,7 +10,6 @@ import java.sql.SQLException;
 
 public class WalletDAO {
 
-    // 1. Get or Create Wallet
     public Wallet getWalletByDriverId(int driverId) {
         String selectSql = "SELECT * FROM WALLET WHERE Driver_Id = ?";
         
@@ -32,6 +31,7 @@ public class WalletDAO {
     }
 
     private Wallet createWalletForDriver(int driverId) {
+        // ID is strictly omitted so PostgreSQL handles sequence generation
         String insertSql = "INSERT INTO WALLET (Driver_Id, Balance) VALUES (?, 0.00) RETURNING wallet_id";
         
         try (Connection conn = DatabaseConnection.getConnection();
@@ -48,19 +48,19 @@ public class WalletDAO {
         return null;
     }
 
-    // 2. CREDIT Transaction (Ride Earnings)
     public boolean creditDriverWallet(int driverId, int rideId, double amount) {
         Wallet wallet = getWalletByDriverId(driverId);
         if (wallet == null) return false;
 
         String updateWalletSql = "UPDATE WALLET SET Balance = Balance + ? WHERE Wallet_Id = ?";
+        // Txn_Id is omitted entirely to prevent sequence errors
         String insertTxnSql = "INSERT INTO WALLET_TRANSACTIONS (Wallet_Id, Ride_Id, Movement, Purpose, Amount, Balance_After) " +
                               "VALUES (?, ?, 'CREDIT', 'Ride Earning', ?, ?)";
 
         Connection conn = null;
         try {
             conn = DatabaseConnection.getConnection();
-            conn.setAutoCommit(false); 
+            conn.setAutoCommit(false); // ACID Transaction Begins
 
             double newBalance = wallet.getBalance() + amount;
 
@@ -94,7 +94,6 @@ public class WalletDAO {
         }
     }
 
-    // 3. DEBIT Transaction (Bank Withdrawal)
     public boolean withdrawFromWallet(int driverId, double amount) {
         if (amount <= 0) {
             System.out.println("[!] Withdrawal failed: Amount must be greater than zero.");
@@ -104,21 +103,20 @@ public class WalletDAO {
         Wallet wallet = getWalletByDriverId(driverId);
         if (wallet == null) return false;
 
-        // Security Check: Prevent Overdrawing
         if (wallet.getBalance() < amount) {
             System.out.println("[!] Withdrawal failed: Insufficient funds. Available Balance: Rs. " + wallet.getBalance());
             return false;
         }
 
         String updateWalletSql = "UPDATE WALLET SET Balance = Balance - ? WHERE Wallet_Id = ?";
-        // Note: Ride_Id is omitted here because a withdrawal is not linked to a specific ride
+        // Txn_Id omitted again for safety
         String insertTxnSql = "INSERT INTO WALLET_TRANSACTIONS (Wallet_Id, Movement, Purpose, Amount, Balance_After) " +
-                              "VALUES (?, 'DEBIT', 'Bank Withdrawal', ?, ?)";
+                              "VALUES (?, 'DEBIT', 'Wallet Withdrawal', ?, ?)";
 
         Connection conn = null;
         try {
             conn = DatabaseConnection.getConnection();
-            conn.setAutoCommit(false); 
+            conn.setAutoCommit(false); // ACID Transaction Begins
 
             double newBalance = wallet.getBalance() - amount;
 
