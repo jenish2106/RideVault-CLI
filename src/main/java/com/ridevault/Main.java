@@ -22,7 +22,7 @@ public class Main {
 
     static Scanner scanner = new Scanner(System.in);
     
-    // Core Services & DAOs initialized once (Singleton-style for the session)
+    // Core Services & DAOs initialized once
     static RiderService riderService = new RiderService();
     static DriverService driverService = new DriverService();
     static RideService rideService = new RideService();
@@ -133,7 +133,7 @@ public class Main {
                     continue; 
                 }
 
-                System.out.println(YELLOW + "\n[SYSTEM] Calculating optimal route via satellite..." + RESET);
+                System.out.println(YELLOW + "\n[SYSTEM] Calculating optimal route..." + RESET);
                 double estimatedFare = rideService.calculateFare(pickup, dropoff);
                 
                 System.out.println(CYAN + BOLD + "\n>>> Route: " + pickup.getDisplayName() + " to " + dropoff.getDisplayName() + RESET);
@@ -244,10 +244,31 @@ public class Main {
                     System.out.print("\n" + CYAN + "Enter the Ride ID you just completed: " + RESET);
                     int rideId = Integer.parseInt(scanner.nextLine());
                     
-                    System.out.print(CYAN + "Enter the Final Fare collected from Rider (Rs.): " + RESET);
-                    double finalFare = Double.parseDouble(scanner.nextLine());
+                    // 1. Fetch exact calculated fare from DB (Fraud Prevention)
+                    double expectedFare = rideService.getExpectedFareForRide(rideId);
                     
-                    rideService.completeRide(rideId, currentDriver.getId(), finalFare);
+                    if (expectedFare <= 0) {
+                        System.out.println(RED + "[!] Invalid Ride ID or ride is already completed." + RESET);
+                        continue; 
+                    }
+                    
+                    System.out.println(YELLOW + "Expected System Fare for this ride: Rs. " + expectedFare + RESET);
+                    
+                    double collectedFare = -1; 
+                    
+                    // 2. Validation Loop
+                    while (collectedFare < expectedFare) {
+                        System.out.print(CYAN + "Enter the Final Fare collected from Rider (Rs.): " + RESET);
+                        collectedFare = Double.parseDouble(scanner.nextLine());
+                        
+                        if (collectedFare < expectedFare) {
+                            System.out.println(RED + "[!] System Error: Collected amount cannot be less than the calculated Final Fare (Rs. " + expectedFare + ")." + RESET);
+                        }
+                    }
+                    
+                    // 3. Process complete ride
+                    rideService.completeRide(rideId, currentDriver.getId(), collectedFare);
+                    
                 } catch (NumberFormatException e) {
                     System.out.println(RED + "[!] Please enter a valid numerical value." + RESET);
                 }
@@ -262,7 +283,6 @@ public class Main {
                 }
 
             } else if (choice.equals("5")) {
-                // ACID WITHDRAWAL LOGIC
                 System.out.println("\n" + CYAN + "--- WITHDRAW FUNDS ---" + RESET);
                 Wallet myWallet = walletDAO.getWalletByDriverId(currentDriver.getId());
                 
@@ -275,7 +295,6 @@ public class Main {
                             boolean success = walletDAO.withdrawFromWallet(currentDriver.getId(), amount);
                             
                             if (success) {
-                                // Explicitly removed references to external banks as per database architecture
                                 System.out.println(GREEN + "[SUCCESS] Withdraw Successfully!! Rs. " + amount + " has been deducted from your wallet." + RESET);
                             }
                         } catch (NumberFormatException e) {
