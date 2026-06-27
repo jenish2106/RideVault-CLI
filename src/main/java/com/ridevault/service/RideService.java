@@ -1,123 +1,285 @@
 package com.ridevault.service;
 
-import com.ridevault.dao.PricingDAO;
-import com.ridevault.dao.RideDAO;
+import com.ridevault.DatabaseConnection;
 import com.ridevault.dao.WalletDAO;
-import com.ridevault.model.FareRule;
 import com.ridevault.model.Location;
-import com.ridevault.model.Ride;
-import java.util.List;
+
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.text.DecimalFormat;
 
 public class RideService {
 
-    private RideDAO rideDAO;
-    private PricingDAO pricingDAO;
-    private WalletDAO walletDAO;
+    private final WalletDAO walletDAO = new WalletDAO();
+    private static final DecimalFormat df = new DecimalFormat("0.00");
 
-    public RideService() {
-        this.rideDAO = new RideDAO();
-        this.pricingDAO = new PricingDAO();
-        this.walletDAO = new WalletDAO();
+    // ==========================================
+    // 1. REAL-WORLD DYNAMIC PRICING ENGINE
+    // ==========================================
+    public double calculateFare(Location pickup, Location dropoff) {
+        // 1. Static Tariff Rules 
+        double baseFare = 20.0;
+        double ratePerKm = 7.0;
+        double ratePerMin = 2.0;
+        double minimumFare = 30.0;
+        double platformBookingFee = 0.0; // Ready for future monetization
+
+        // 2. Geospatial & Routing Engine (Using actual GPS coordinates)
+        double distanceKm = calculateRealWorldDistance(
+            pickup.getLat(), pickup.getLng(), 
+            dropoff.getLat(), dropoff.getLng()
+        ); 
+        
+        // 3. Traffic & Time Estimation
+        double trafficModifier = getRealTimeTrafficModifier(); 
+        double estimatedTimeMin = (distanceKm / 0.5) * trafficModifier; // 0.5km/min is base speed
+        
+        // 4. Algorithmic Surge (Supply vs Demand)
+        double surgeMultiplier = calculateSupplyDemandSurge(pickup);
+
+        // --- THE REAL-WORLD FORMULA ---
+        
+        // Step A: Time & Distance Subtotal
+        double routeSubtotal = baseFare + (distanceKm * ratePerKm) + (estimatedTimeMin * ratePerMin);
+        
+        // Step B: Apply Supply/Demand Surge
+        double surgedFare = routeSubtotal * surgeMultiplier;
+        
+        // Step C: Minimum Fare Floor Protection for Driver
+        double fareBeforeFees = Math.max(surgedFare, minimumFare);
+        
+        // Step D: Add non-surgeable Platform Fees
+        double finalCalculatedFare = fareBeforeFees + platformBookingFee;
+
+        // Round to nearest integer for exact billing (Clean UX, no backend logs printed)
+        return Math.round(finalCalculatedFare);
     }
 
-    // --- GEOSPATIAL MATH ---
-    private double calculateDistance(double lat1, double lon1, double lat2, double lon2) {
-        final int R = 6371; // Earth Radius in KM
+    // --- OOP HELPER METHODS ---
+
+    // ==========================================
+    // GPS Spherical Distance Engine (Haversine)
+    // ==========================================
+    private double calculateRealWorldDistance(double lat1, double lon1, double lat2, double lon2) {
+        // The average radius of the Earth in kilometers
+        final int R = 6371; 
+
+        // Convert GPS degrees to mathematical radians
         double latDistance = Math.toRadians(lat2 - lat1);
         double lonDistance = Math.toRadians(lon2 - lon1);
+        
+        double lat1Rad = Math.toRadians(lat1);
+        double lat2Rad = Math.toRadians(lat2);
+
+        // The Haversine Formula (Calculates the curve over a sphere)
         double a = Math.sin(latDistance / 2) * Math.sin(latDistance / 2)
-                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
-                * Math.sin(lonDistance / 2) * Math.sin(lonDistance / 2);
+                 + Math.cos(lat1Rad) * Math.cos(lat2Rad)
+                 * Math.sin(lonDistance / 2) * Math.sin(lonDistance / 2);
+                 
         double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        return R * c; 
+        
+        // Multiply the curved angle by the Earth's radius to get kilometers
+        double distanceKm = R * c; 
+        
+        // Ensure distance is never exactly 0 if pickup and dropoff are very close
+        distanceKm = Math.max(distanceKm, 1.5);
+        
+        // Round to 1 decimal place (e.g., 7.5 km) for a clean UI
+        return Math.round(distanceKm * 10.0) / 10.0;
     }
 
-    // --- DYNAMIC PRICING ENGINE ---
-    public double calculateFare(Location pickup, Location dropoff) {
-        FareRule rules = pricingDAO.getFareRuleByCategory("Sedan");
-        if (rules == null) {
-            rules = new FareRule(0, "Fallback", 50.0, 12.0, 2.0, 100.0);
-        }
-
-        double distanceKm = calculateDistance(pickup.getLatitude(), pickup.getLongitude(), 
-                                              dropoff.getLatitude(), dropoff.getLongitude());
-        
-        int estimatedDurationMin = (int) (distanceKm / 0.5); 
-        if (distanceKm == 0) estimatedDurationMin = 1; 
-
-        double surgeMultiplier = pricingDAO.getActiveSurgeMultiplier(pickup.getLatitude(), pickup.getLongitude());
-
-        double distanceCharge = distanceKm * rules.getPerKmRate();
-        double timeCharge = estimatedDurationMin * rules.getPerMinRate();
-        
-        double rawSubtotal = rules.getBaseFare() + distanceCharge + timeCharge;
-        double priceAfterMinCheck = Math.max(rawSubtotal, rules.getMinFare());
-        double finalFare = priceAfterMinCheck * surgeMultiplier;
-
-        return Math.round(finalFare * 100.0) / 100.0; 
+    private double getRealTimeTrafficModifier() {
+        // Simulates fetching live traffic data (1.0 = Clear, 1.5 = Heavy Traffic).
+        double traffic = 1.0 + (Math.random() * 0.5);
+        return Math.round(traffic * 10.0) / 10.0;
     }
 
-    // --- RIDE LIFECYCLE ---
-    public boolean requestRide(int riderId, Location pickup, Location dropoff, double confirmedFare) {
-        if (pickup == dropoff) {
-            System.out.println("[!] Invalid Request: Pickup and Drop-off locations cannot be the same.");
-            return false;
+    private double calculateSupplyDemandSurge(Location pickupZone) {
+        int activeRiders = 0;
+        int activeDrivers = 0;
+        
+        // 1. REAL DEMAND: Count how many rides are currently PENDING in this exact zone
+        String demandSql = "SELECT COUNT(*) FROM Ride WHERE Status = 'PENDING' AND Pickup_Address = ?";
+        
+        // 2. REAL SUPPLY: Count drivers who are NOT currently busy with an ACCEPTED ride
+        String supplySql = "SELECT COUNT(*) FROM Driver WHERE Driver_Id NOT IN (SELECT Driver_Id FROM Ride WHERE Status = 'ACCEPTED')";
+        
+        try (Connection conn = DatabaseConnection.getConnection();
+             PreparedStatement pstmtDemand = conn.prepareStatement(demandSql);
+             PreparedStatement pstmtSupply = conn.prepareStatement(supplySql)) {
+             
+            pstmtDemand.setString(1, pickupZone.getDisplayName());
+            ResultSet rsDemand = pstmtDemand.executeQuery();
+            if (rsDemand.next()) {
+                activeRiders = rsDemand.getInt(1);
+            }
+            
+            ResultSet rsSupply = pstmtSupply.executeQuery();
+            if (rsSupply.next()) {
+                activeDrivers = rsSupply.getInt(1);
+            }
+            
+        } catch (SQLException e) {
+            System.out.println("\u001B[31m[!] Error calculating live surge metrics: " + e.getMessage() + "\u001B[0m");
         }
 
-        Ride newRide = new Ride(riderId, pickup.getDisplayName(), pickup.getLatitude(), pickup.getLongitude(), 
-                                dropoff.getDisplayName(), dropoff.getLatitude(), dropoff.getLongitude(), confirmedFare);
+        // Failsafe: Prevent division by zero if database is completely empty
+        if (activeDrivers == 0) activeDrivers = 1;
         
-        boolean isCreated = rideDAO.createRide(newRide);
-        if (isCreated) {
-            System.out.println(com.ridevault.Main.GREEN + "[SUCCESS] Ride booked! Broadcasting to nearby drivers..." + com.ridevault.Main.RESET);
-        } else {
-            System.out.println(com.ridevault.Main.RED + "[!] Failed to book ride. Please try again." + com.ridevault.Main.RESET);
+        // Calculate the Supply/Demand Ratio
+        double ratio = (double) activeRiders / activeDrivers;
+        
+        // The Enterprise Surge Math
+        double surgeMultiplier = 1.0; 
+        
+        // Activate surge if demand outpaces supply by 20%
+        if (ratio > 1.2) {
+            double surgeSensitivity = 0.35; 
+            surgeMultiplier = 1.0 + ((ratio - 1.2) * surgeSensitivity);
         }
-        return isCreated;
+        
+        // Hard Cap to prevent runaway pricing
+        double maxSurgeLimit = 3.5; 
+        surgeMultiplier = Math.min(surgeMultiplier, maxSurgeLimit);
+        
+        return Math.round(surgeMultiplier * 10.0) / 10.0;
     }
 
+    // ==========================================
+    // 2. REQUEST A RIDE (Rider Portal)
+    // ==========================================
+    public void requestRide(int riderId, Location pickup, Location dropoff, double estimatedFare) {
+        // Omitting Ride_Id so PostgreSQL safely auto-generates it
+        String sql = "INSERT INTO Ride (Rider_Id, Status, Pickup_Address, Pickup_Lat, Pickup_Lng, Dropoff_Address, Dropoff_Lat, Dropoff_Lng, Final_Fare) " +
+                     "VALUES (?, 'PENDING', ?, ?, ?, ?, ?, ?, ?)";
+                     
+        try (Connection conn = DatabaseConnection.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+             
+            pstmt.setInt(1, riderId);
+            pstmt.setString(2, pickup.getDisplayName());
+            pstmt.setDouble(3, pickup.getLat());
+            pstmt.setDouble(4, pickup.getLng());
+            pstmt.setString(5, dropoff.getDisplayName());
+            pstmt.setDouble(6, dropoff.getLat());
+            pstmt.setDouble(7, dropoff.getLng());
+            pstmt.setDouble(8, estimatedFare);
+            
+            int rows = pstmt.executeUpdate();
+            if (rows > 0) {
+                System.out.println("\u001B[32m[SUCCESS] Ride requested successfully! Waiting for a driver to accept.\u001B[0m");
+            }
+        } catch (SQLException e) {
+            System.out.println("\u001B[31m[!] Failed to request ride: " + e.getMessage() + "\u001B[0m");
+        }
+    }
+
+    // ==========================================
+    // 3. SHOW PENDING RIDES (Driver Portal)
+    // ==========================================
     public void showPendingRides() {
-        List<Ride> pendingRides = rideDAO.getPendingRides();
-
-        if (pendingRides.isEmpty()) {
-            System.out.println("No rides currently available in your area.");
-        } else {
-            System.out.println("\n--- NEARBY RIDE REQUESTS ---");
-            for (Ride ride : pendingRides) {
-                System.out.println("Ride ID: [" + ride.getRideId() + "] | Pickup: " + ride.getPickupAddress() + 
-                                   " | Dropoff: " + ride.getDropoffAddress() + " | Est. Fare: Rs. " + ride.getFinalFare());
-            }
-        }
-    }
-
-    public boolean acceptRide(int rideId, int driverId) {
-        boolean isAccepted = rideDAO.acceptRideInDB(rideId, driverId);
-        if (isAccepted) {
-            System.out.println(com.ridevault.Main.GREEN + "Ride Accepted! Please proceed to the pickup location." + com.ridevault.Main.RESET);
-        } else {
-            System.out.println(com.ridevault.Main.RED + "[!] Failed to accept. Invalid ID, or another driver already took it." + com.ridevault.Main.RESET);
-        }
-        return isAccepted;
-    }
-
-    public boolean completeRide(int rideId, int driverId, double finalFare) {
-        boolean isCompleted = rideDAO.completeRideInDB(rideId, driverId);
+        String sql = "SELECT Ride_Id, Pickup_Address, Dropoff_Address, Final_Fare FROM Ride WHERE Status = 'PENDING'";
         
-        if (isCompleted) {
-            // Driver keeps 80% of the fare, Platform keeps 20%
-            double driverEarnings = Math.round((finalFare * 0.80) * 100.0) / 100.0;
-            
-            // Execute the secure ACID transaction
-            boolean paymentSuccess = walletDAO.creditDriverWallet(driverId, rideId, driverEarnings);
-            
-            if (paymentSuccess) {
-                System.out.println(com.ridevault.Main.GREEN + "Ride Completed! Rs. " + driverEarnings + " has been credited to your Wallet." + com.ridevault.Main.RESET);
-            } else {
-                System.out.println(com.ridevault.Main.RED + "Ride completed, but wallet credit failed. Please contact support." + com.ridevault.Main.RESET);
+        try (Connection conn = DatabaseConnection.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql);
+             ResultSet rs = pstmt.executeQuery()) {
+             
+            boolean hasRides = false;
+            while (rs.next()) {
+                hasRides = true;
+                System.out.println("Ride ID: [" + rs.getInt("Ride_Id") + "] | Route: " + 
+                                   rs.getString("Pickup_Address") + " -> " + 
+                                   rs.getString("Dropoff_Address") + " | Fare: Rs. " + 
+                                   rs.getDouble("Final_Fare"));
             }
-        } else {
-            System.out.println(com.ridevault.Main.RED + "[!] Error: Invalid ID. You can only complete rides assigned to you." + com.ridevault.Main.RESET);
+            
+            if (!hasRides) {
+                System.out.println("\u001B[33mNo pending rides available in your area right now.\u001B[0m");
+            }
+        } catch (SQLException e) {
+            System.out.println("\u001B[31m[!] Error fetching rides: " + e.getMessage() + "\u001B[0m");
         }
-        return isCompleted;
+    }
+
+    // ==========================================
+    // 4. ACCEPT A RIDE (Driver Portal)
+    // ==========================================
+    public void acceptRide(int rideId, int driverId) {
+        String sql = "UPDATE Ride SET Driver_Id = ?, Status = 'ACCEPTED' WHERE Ride_Id = ? AND Status = 'PENDING'";
+        
+        try (Connection conn = DatabaseConnection.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+             
+            pstmt.setInt(1, driverId);
+            pstmt.setInt(2, rideId);
+            
+            int rows = pstmt.executeUpdate();
+            if (rows > 0) {
+                System.out.println("\u001B[32m[SUCCESS] You have accepted Ride ID " + rideId + "!\u001B[0m");
+            } else {
+                System.out.println("\u001B[31m[!] Could not accept ride. It may have been taken by another driver or cancelled.\u001B[0m");
+            }
+        } catch (SQLException e) {
+            System.out.println("\u001B[31m[!] Error accepting ride: " + e.getMessage() + "\u001B[0m");
+        }
+    }
+
+    // ==========================================
+    // 5. FETCH EXPECTED FARE (Fraud Prevention)
+    // ==========================================
+    public double getExpectedFareForRide(int rideId) {
+        String sql = "SELECT Final_Fare FROM Ride WHERE Ride_Id = ? AND Status = 'ACCEPTED'"; 
+        
+        try (Connection conn = DatabaseConnection.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+             
+            pstmt.setInt(1, rideId);
+            ResultSet rs = pstmt.executeQuery();
+            
+            if (rs.next()) {
+                return rs.getDouble("Final_Fare");
+            }
+        } catch (SQLException e) {
+            System.out.println("\u001B[31m[!] Error fetching ride fare: " + e.getMessage() + "\u001B[0m");
+        }
+        return -1.0; 
+    }
+
+    // ==========================================
+    // 6. COMPLETE A RIDE (State Management & Payout)
+    // ==========================================
+    public void completeRide(int rideId, int driverId, double collectedFare) {
+        // Driver takes 80% commission, platform takes 20%
+        double driverEarning = Double.parseDouble(df.format(collectedFare * 0.80));
+
+        String sql = "UPDATE Ride SET Status = 'COMPLETED', Final_Fare = ?, Driver_Earning = ?, Completed_At = CURRENT_TIMESTAMP " +
+                     "WHERE Ride_Id = ? AND Driver_Id = ? AND Status = 'ACCEPTED'";
+                     
+        try (Connection conn = DatabaseConnection.getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(sql)) {
+             
+            pstmt.setDouble(1, collectedFare);
+            pstmt.setDouble(2, driverEarning);
+            pstmt.setInt(3, rideId);
+            pstmt.setInt(4, driverId);
+            
+            int rows = pstmt.executeUpdate();
+            if (rows > 0) {
+                // If DB update works, trigger ACID Wallet transaction
+                boolean walletSuccess = walletDAO.creditDriverWallet(driverId, rideId, driverEarning);
+                
+                if (walletSuccess) {
+                    System.out.println("\u001B[32m[SUCCESS] Ride Completed! Rs. " + driverEarning + " (80% cut) has been credited to your Wallet.\u001B[0m");
+                } else {
+                    System.out.println("\u001B[31m[CRITICAL] Ride completed, but wallet credit failed. ACID Rollback triggered.\u001B[0m");
+                }
+            } else {
+                System.out.println("\u001B[31m[!] Could not complete ride. Please verify the Ride ID.\u001B[0m");
+            }
+        } catch (SQLException e) {
+            System.out.println("\u001B[31m[!] Error completing ride: " + e.getMessage() + "\u001B[0m");
+        }
     }
 }
